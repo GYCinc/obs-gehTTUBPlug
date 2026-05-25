@@ -1,5 +1,5 @@
 #!/bin/bash
-# preply — One command: VPN + OBS + captions + auto class link + Chrome
+# preply — One command: OBS + captions + auto class link + Chrome
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +26,8 @@ trap cleanup EXIT INT TERM
 
 echo "=== preply: fetching next class ==="
 source "$HOME/.bashrc" 2>/dev/null
+
+# Step 1: Try Cal.com
 CLASS_LINK=$(curl -s -H "Authorization: Bearer $CAL_API_KEY" \
     "https://api.cal.com/v2/bookings?status=upcoming&take=1" 2>/dev/null | \
     python3 -c "
@@ -35,15 +37,47 @@ bookings = data.get('data', {}).get('bookings', [])
 if bookings:
     b = bookings[0]
     loc = b.get('location', '') or b.get('metadata', {}).get('videoCallUrl', '')
-    ref = b.get('uid', b.get('id', ''))
-    title = b.get('title', 'Class')
-    start = b.get('start', '')
-    print(loc) if loc else print('https://preply.com')
-    print(f'{title} @ {start}', file=sys.stderr)
+    print(loc) if loc else print('')
 else:
-    print('https://preply.com')
-    print('No upcoming bookings', file=sys.stderr)
+    print('')
 " 2>/dev/null)
+
+# Step 2: Fallback to Google Calendar ICS
+if [ -z "$CLASS_LINK" ] && [ -n "$GCAL_ICS_URL" ]; then
+    echo "  Cal.com empty, checking Google Calendar..."
+    CLASS_LINK=$(curl -sL "$GCAL_ICS_URL" 2>/dev/null | \
+        python3 -c "
+import sys, re
+from datetime import datetime, timezone
+ics = sys.stdin.read()
+events = []
+for match in re.finditer(r'BEGIN:VEVENT(.*?)END:VEVENT', ics, re.DOTALL):
+    e = match.group(1)
+    dtstart = re.search(r'DTSTART[^:]*:(\d{8}T\d{6}Z?)', e)
+    desc = re.search(r'DESCRIPTION:(.*?)(?:\n|$)', e)
+    summary = re.search(r'SUMMARY:(.*?)(?:\n|$)', e)
+    loc = re.search(r'LOCATION:(.*?)(?:\n|$)', e)
+    if dtstart:
+        dt = dtstart.group(1)
+        events.append({
+            'start': datetime.strptime(dt[:15], '%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc),
+            'desc': (desc.group(1) if desc else ''),
+            'summary': (summary.group(1) if summary else ''),
+            'location': (loc.group(1) if loc else ''),
+        })
+now = datetime.now(timezone.utc)
+future = [e for e in events if e['start'] > now]
+if future:
+    next_ev = sorted(future, key=lambda e: e['start'])[0]
+    # Look for preply link in description and location
+    combined = next_ev['description'] + ' ' + next_ev['location']
+    link = re.search(r'https?://preply\.com/\S+', combined)
+    print(link.group(0) if link else '')
+" 2>/dev/null)
+fi
+
+# Step 3: Default fallback
+CLASS_LINK="${CLASS_LINK:-https://preply.com}"
 echo "  Class link: $CLASS_LINK"
 
 echo "=== Launching OBS ==="
