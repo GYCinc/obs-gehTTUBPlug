@@ -1,101 +1,58 @@
 #!/bin/bash
-# preply — One command: OBS + captions + auto class link + Chrome
-set -e
-
+# preply — One command: OBS + auto class link + Chrome + virtual cam
 DIR="$(cd "$(dirname "$0")" && pwd)"
-OBS_PID=""
-CONTROLLER_PID=""
-CLASS_LINK=""
+OBS_PID=""; CONTROLLER_PID=""; CLASS_LINK=""
+
+# Load API keys from bashrc
+source "$HOME/.bashrc" 2>/dev/null || true
 
 cleanup() {
-    echo ""
-    if [ -n "$CONTROLLER_PID" ] && kill -0 "$CONTROLLER_PID" 2>/dev/null; then
-        kill "$CONTROLLER_PID" 2>/dev/null
-        wait "$CONTROLLER_PID" 2>/dev/null
-        echo "OBS controller stopped."
-    fi
-    if [ -n "$OBS_PID" ] && kill -0 "$OBS_PID" 2>/dev/null; then
-        kill "$OBS_PID" 2>/dev/null
-        wait "$OBS_PID" 2>/dev/null
-        echo "OBS closed."
-    fi
+    echo ""; [ -n "$CONTROLLER_PID" ] && kill "$CONTROLLER_PID" 2>/dev/null && echo "Controller stopped."
+    [ -n "$OBS_PID" ] && kill "$OBS_PID" 2>/dev/null && echo "OBS closed."
     echo "Done."
 }
-
 trap cleanup EXIT INT TERM
 
 echo "=== preply: fetching next class ==="
-source "$HOME/.bashrc" 2>/dev/null
-
-# Step 1: Try Cal.com
 CLASS_LINK=$(curl -s -H "Authorization: Bearer $CAL_API_KEY" \
-    "https://api.cal.com/v2/bookings?status=upcoming&take=1" 2>/dev/null | \
-    python3 -c "
-import json,sys
-data = json.load(sys.stdin)
-bookings = data.get('data', {}).get('bookings', [])
-if bookings:
-    b = bookings[0]
-    loc = b.get('location', '') or b.get('metadata', {}).get('videoCallUrl', '')
-    print(loc) if loc else print('')
-else:
-    print('')
-" 2>/dev/null)
+    "https://api.cal.com/v2/bookings?status=upcoming&take=1" | python3 -c \
+"import json,sys; d=json.load(sys.stdin)
+for b in d.get('data',{}).get('bookings',[]):
+ l=b.get('location','') or b.get('metadata',{}).get('videoCallUrl','')
+ print(l) if l else ''
+ break" 2>/dev/null)
 
-# Step 2: Fallback to Google Calendar ICS
 if [ -z "$CLASS_LINK" ] && [ -n "$GCAL_ICS_URL" ]; then
-    echo "  Cal.com empty, checking Google Calendar..."
-    CLASS_LINK=$(curl -sL "$GCAL_ICS_URL" | python3 -c "
-import sys, re
-from datetime import datetime, timezone
-ics = sys.stdin.read()
-# Unfold ICS continuation lines (lines starting with whitespace)
-ics = re.sub(r'\n\s+', '', ics)
-now = datetime.now(timezone.utc)
-for m in re.finditer(r'BEGIN:VEVENT(.*?)END:VEVENT', ics, re.DOTALL):
-    dts = re.search(r'DTSTART[^:]*:(\d{8}T\d{6}Z?)', m.group(1))
-    if not dts: continue
-    dt = datetime.strptime(dts.group(1)[:15], '%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc)
-    if dt < now: continue
-    txt = m.group(1)
-    loc = re.search(r'LOCATION:(.*)', txt)
-    desc = re.search(r'DESCRIPTION:(.*)', txt)
-    combined = (loc.group(1)+' ' if loc else '') + (desc.group(1) if desc else '')
-    link = re.search(r'https://preply\.com\S+', combined)
-    if link: print(link.group(0)); break
-" 2>/dev/null || true)
+    echo "  Checking Google Calendar..."
+    CLASS_LINK=$(curl -sL "$GCAL_ICS_URL" | python3 -c \
+"import sys,re;from datetime import datetime,timezone
+ics=re.sub(r'\n\s+','',sys.stdin.read());now=datetime.now(timezone.utc)
+for m in re.finditer(r'BEGIN:VEVENT(.*?)END:VEVENT',ics,re.DOTALL):
+ dts=re.search(r'DTSTART[^:]*:(\d{8}T\d{6}Z?)',m.group(1))
+ if not dts: continue
+ dt=datetime.strptime(dts.group(1)[:15],'%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc)
+ if dt<now: continue
+ loc=re.search(r'LOCATION:(.*)',m.group(1))
+ link=re.search(r'https://preply\.com\S+',(loc.group(1) if loc else ''))
+ if link: print(link.group(0)); break" 2>/dev/null)
 fi
-
-# Step 3: Default fallback
 CLASS_LINK="${CLASS_LINK:-https://preply.com}"
 echo "  Class link: $CLASS_LINK"
 
 echo "=== Launching OBS ==="
 flatpak run com.obsproject.Studio --disable-shutdown-check &
-OBS_PID=$!
-sleep 3
+OBS_PID=$!; sleep 3
 
-echo "=== Starting OBS controller (captions + virtual camera + dual audio) ==="
-source "$HOME/.bashrc" 2>/dev/null
+echo "=== Starting OBS controller (recording) ==="
 "$DIR/.venv/bin/python3" "$DIR/obs-controller.py" &
-CONTROLLER_PID=$!
-sleep 2
+CONTROLLER_PID=$!; sleep 2
 
-echo "=== Launching Chrome → $CLASS_LINK ==="
-flatpak run com.google.Chrome \
-    --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
-    --webrtc-ip-handling-policy=disable_non_proxied_udp \
-    --enforce-webrtc-ip-permission-check \
-    --disable-background-networking \
-    --disable-sync \
-    --disable-geolocation \
-    --window-size=1920,1080 \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-extensions \
-    --disable-background-mode \
-    --disable-component-update \
-    "$CLASS_LINK" &
-CHROME_PID=$!
-
-wait $CHROME_PID 2>/dev/null
+echo ""
+echo "  ┌─────────────────────────────────────┐"
+echo "  │ Class: $CLASS_LINK"
+echo "  │ Virtual cam: Tools → Start Virtual Camera"
+echo "  │ Captions: Tools → Captions → Enable"
+echo "  └─────────────────────────────────────┘"
+echo ""
+echo "Session live. Close this terminal to stop."
+wait $CONTROLLER_PID 2>/dev/null
