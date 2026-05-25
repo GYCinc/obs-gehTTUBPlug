@@ -1,58 +1,10 @@
 #!/bin/bash
-# preply — One command: OBS + auto class link + Chrome + virtual cam
 DIR="$(cd "$(dirname "$0")" && pwd)"
-OBS_PID=""; CONTROLLER_PID=""; CLASS_LINK=""
-
-# Load API keys from bashrc
-source "$HOME/.bashrc" 2>/dev/null || true
-
-cleanup() {
-    echo ""; [ -n "$CONTROLLER_PID" ] && kill "$CONTROLLER_PID" 2>/dev/null && echo "Controller stopped."
-    [ -n "$OBS_PID" ] && kill "$OBS_PID" 2>/dev/null && echo "OBS closed."
-    echo "Done."
-}
-trap cleanup EXIT INT TERM
-
-echo "=== preply: fetching next class ==="
-CLASS_LINK=$(curl -s -H "Authorization: Bearer $CAL_API_KEY" \
-    "https://api.cal.com/v2/bookings?status=upcoming&take=1" | python3 -c \
-"import json,sys; d=json.load(sys.stdin)
-for b in d.get('data',{}).get('bookings',[]):
- l=b.get('location','') or b.get('metadata',{}).get('videoCallUrl','')
- print(l) if l else ''
- break" 2>/dev/null)
-
-if [ -z "$CLASS_LINK" ] && [ -n "$GCAL_ICS_URL" ]; then
-    echo "  Checking Google Calendar..."
-    CLASS_LINK=$(curl -sL "$GCAL_ICS_URL" | python3 -c \
-"import sys,re;from datetime import datetime,timezone
-ics=re.sub(r'\n\s+','',sys.stdin.read());now=datetime.now(timezone.utc)
-for m in re.finditer(r'BEGIN:VEVENT(.*?)END:VEVENT',ics,re.DOTALL):
- dts=re.search(r'DTSTART[^:]*:(\d{8}T\d{6}Z?)',m.group(1))
- if not dts: continue
- dt=datetime.strptime(dts.group(1)[:15],'%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc)
- if dt<now: continue
- loc=re.search(r'LOCATION:(.*)',m.group(1))
- link=re.search(r'https://preply\.com\S+',(loc.group(1) if loc else ''))
- if link: print(link.group(0)); break" 2>/dev/null)
-fi
-CLASS_LINK="${CLASS_LINK:-https://preply.com}"
-echo "  Class link: $CLASS_LINK"
-
-echo "=== Launching OBS ==="
-flatpak run com.obsproject.Studio --disable-shutdown-check &
-OBS_PID=$!; sleep 3
-
-echo "=== Starting OBS controller (recording) ==="
-"$DIR/.venv/bin/python3" "$DIR/obs-controller.py" &
-CONTROLLER_PID=$!; sleep 2
-
-echo ""
-echo "  ┌─────────────────────────────────────┐"
-echo "  │ Class: $CLASS_LINK"
-echo "  │ Virtual cam: Tools → Start Virtual Camera"
-echo "  │ Captions: Tools → Captions → Enable"
-echo "  └─────────────────────────────────────┘"
-echo ""
-echo "Session live. Close this terminal to stop."
-wait $CONTROLLER_PID 2>/dev/null
+OBS_PID=""; CTRL_PID=""
+cleanup() { [ -n "$CTRL_PID" ] && kill "$CTRL_PID" 2>/dev/null
+            [ -n "$OBS_PID" ] && kill "$OBS_PID" 2>/dev/null; }
+trap cleanup EXIT
+flatpak run com.obsproject.Studio --disable-shutdown-check & OBS_PID=$!
+sleep 3
+"$DIR/.venv/bin/python3" "$DIR/obs-controller.py" & CTRL_PID=$!
+wait $CTRL_PID
