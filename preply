@@ -1,11 +1,11 @@
 #!/bin/bash
-# preply — One command: VPN + OBS + captions + Chromium
+# preply — One command: VPN + OBS + captions + auto class link + Chrome
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-CHROMIUM_PROFILE="$HOME/.config/preply-chromium"
 OBS_PID=""
 CONTROLLER_PID=""
+CLASS_LINK=""
 
 cleanup() {
     echo ""
@@ -29,6 +29,28 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+echo "=== preply: fetching next class ==="
+source "$HOME/.bashrc" 2>/dev/null
+CLASS_LINK=$(curl -s -H "Authorization: Bearer $CAL_API_KEY" \
+    "https://api.cal.com/v2/bookings?status=upcoming&take=1" 2>/dev/null | \
+    python3 -c "
+import json,sys
+data = json.load(sys.stdin)
+bookings = data.get('data', {}).get('bookings', [])
+if bookings:
+    b = bookings[0]
+    loc = b.get('location', '') or b.get('metadata', {}).get('videoCallUrl', '')
+    ref = b.get('uid', b.get('id', ''))
+    title = b.get('title', 'Class')
+    start = b.get('start', '')
+    print(loc) if loc else print('https://preply.com')
+    print(f'{title} @ {start}', file=sys.stderr)
+else:
+    print('https://preply.com')
+    print('No upcoming bookings', file=sys.stderr)
+" 2>/dev/null)
+echo "  Class link: $CLASS_LINK"
+
 echo "=== preply: checking Mullvad ==="
 if ! mullvad status 2>/dev/null | grep -q "Connected"; then
     echo "Connecting Mullvad..."
@@ -48,14 +70,11 @@ source "$HOME/.bashrc" 2>/dev/null
 CONTROLLER_PID=$!
 sleep 2
 
-echo "=== Launching Preply Chromium ==="
-google-chrome \
-    --user-data-dir="$CHROMIUM_PROFILE" \
+echo "=== Launching Chrome → $CLASS_LINK ==="
+flatpak run com.google.Chrome \
     --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
     --webrtc-ip-handling-policy=disable_non_proxied_udp \
     --enforce-webrtc-ip-permission-check \
-    --use-fake-device-for-media-stream \
-    --use-fake-ui-for-media-stream \
     --disable-background-networking \
     --disable-sync \
     --disable-geolocation \
@@ -63,11 +82,9 @@ google-chrome \
     --no-first-run \
     --no-default-browser-check \
     --disable-extensions \
-    --disable-plugins \
     --disable-background-mode \
     --disable-component-update \
-    --disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies \
-    https://preply.com &
-CHROMIUM_PID=$!
+    "$CLASS_LINK" &
+CHROME_PID=$!
 
-wait $CHROMIUM_PID 2>/dev/null
+wait $CHROME_PID 2>/dev/null
