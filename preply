@@ -1,0 +1,73 @@
+#!/bin/bash
+# preply — One command: VPN + OBS + captions + Chromium
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+CHROMIUM_PROFILE="$HOME/.config/preply-chromium"
+OBS_PID=""
+CONTROLLER_PID=""
+
+cleanup() {
+    echo ""
+    if [ -n "$CONTROLLER_PID" ] && kill -0 "$CONTROLLER_PID" 2>/dev/null; then
+        kill "$CONTROLLER_PID" 2>/dev/null
+        wait "$CONTROLLER_PID" 2>/dev/null
+        echo "OBS controller stopped."
+    fi
+    if [ -n "$OBS_PID" ] && kill -0 "$OBS_PID" 2>/dev/null; then
+        kill "$OBS_PID" 2>/dev/null
+        wait "$OBS_PID" 2>/dev/null
+        echo "OBS closed."
+    fi
+    echo ""
+    read -rp "Disconnect Mullvad VPN? [y/N] " yn
+    case $yn in
+        [Yy]*) mullvad disconnect ;;
+    esac
+    echo "Done."
+}
+
+trap cleanup EXIT INT TERM
+
+echo "=== preply: checking Mullvad ==="
+if ! mullvad status 2>/dev/null | grep -q "Connected"; then
+    echo "Connecting Mullvad..."
+    mullvad connect
+    sleep 2
+fi
+echo "Mullvad: $(mullvad status 2>/dev/null | grep -E 'Visible|Connected' | head -1)"
+
+echo "=== Launching OBS ==="
+flatpak run com.obsproject.Studio --disable-shutdown-check &
+OBS_PID=$!
+sleep 3
+
+echo "=== Starting OBS controller (captions + virtual camera + dual audio) ==="
+source "$HOME/.bashrc" 2>/dev/null
+"$DIR/.venv/bin/python3" "$DIR/obs-controller.py" &
+CONTROLLER_PID=$!
+sleep 2
+
+echo "=== Launching Preply Chromium ==="
+google-chrome \
+    --user-data-dir="$CHROMIUM_PROFILE" \
+    --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+    --webrtc-ip-handling-policy=disable_non_proxied_udp \
+    --enforce-webrtc-ip-permission-check \
+    --use-fake-device-for-media-stream \
+    --use-fake-ui-for-media-stream \
+    --disable-background-networking \
+    --disable-sync \
+    --disable-geolocation \
+    --window-size=1920,1080 \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-extensions \
+    --disable-plugins \
+    --disable-background-mode \
+    --disable-component-update \
+    --disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies \
+    https://preply.com &
+CHROMIUM_PID=$!
+
+wait $CHROMIUM_PID 2>/dev/null
